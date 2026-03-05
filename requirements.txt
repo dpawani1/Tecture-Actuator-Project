@@ -1,0 +1,11 @@
+blobconverter==1.4.3
+certifi==2026.1.4
+charset-normalizer==3.4.4
+depthai==2.32.0.0
+idna==3.11
+numpy==2.4.2
+opencv-python==4.13.0.92
+pyserial==3.5
+PyYAML==6.0.3
+requests==2.32.5
+urllib3==2.6.3
