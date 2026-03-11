@@ -46,8 +46,8 @@ camRgb.setFps(30)
 camRgb.setPreviewSize(300, 300)
 
 # Large video stream for display
-camRgb.setIspScale(1, 1)           # full sensor scaling
-camRgb.setVideoSize(1920, 1080)    # biggest practical display stream here
+camRgb.setIspScale(2, 3)           # full sensor scaling
+camRgb.setVideoSize(960, 540)    # biggest practical display stream here
 
 nn.setConfidenceThreshold(CONF_THRESH)
 nn.setBlobPath(blobconverter.from_zoo(name="mobilenet-ssd", shaves=5))
