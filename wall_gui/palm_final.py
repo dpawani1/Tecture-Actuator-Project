@@ -56,16 +56,13 @@ def main():
     parser.add_argument("--serial_port", default="/dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=9600)
 
-    # rectangular video now
     parser.add_argument("--video_width", type=int, default=960)
     parser.add_argument("--video_height", type=int, default=640)
     parser.add_argument("--fps", type=int, default=30)
 
-    # timing
     parser.add_argument("--hold_detect_s", type=float, default=2.0)
     parser.add_argument("--actuate_hold_s", type=float, default=4.0)
 
-    # disappearing center trail
     parser.add_argument("--trail_time_s", type=float, default=2.0)
     parser.add_argument("--trail_max_points", type=int, default=120)
 
@@ -83,9 +80,7 @@ def main():
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setFps(args.fps)
-    cam.setIspScale(2, 3)  # 720p from 1080p
-
-    # rectangular video instead of square
+    cam.setIspScale(2, 3)
     cam.setVideoSize(args.video_width, args.video_height)
     cam.setPreviewSize(128, 128)
     cam.setInterleaved(False)
@@ -118,26 +113,20 @@ def main():
     except Exception as e:
         print(f"[SERIAL] Not connected: {e}")
 
-    # ---------------- State ----------------
     palmDetection = PalmDetection()
 
-    # detection must stay same for 2 sec before actuation
-    candidate_mask = 0
-    candidate_start_time = None
+    # For each cell:
+    # detect_start[i] = time when hand started staying in that cell
+    # active_until[i] = time until actuator stays on
+    detect_start = [None] * N_CELLS
+    active_until = [0.0] * N_CELLS
 
-    # once active, stay active for 4 sec even if hand leaves
-    active_mask = 0
-    active_until = 0.0
     last_sent_mask = None
-
-    # line trail points: (x, y, t)
     trail_points = []
 
-    # ---------------- Window ----------------
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WIN, 1200, 800)
 
-    # ---------------- Run ----------------
     with dai.Device(pipeline) as device:
         vidQ = device.getOutputQueue("cam", 4, False)
         palmQ = device.getOutputQueue("palm_nn", 4, False)
@@ -148,12 +137,11 @@ def main():
             frame = vidQ.get().getCvFrame()
             h, w = frame.shape[:2]
 
-            # mirrored display only
             disp = cv2.flip(frame, 1)
             draw_grid(disp, GRID_R, GRID_C)
 
-            detected_mask = 0
-            display_cells = []
+            detected_cells = set()
+            display_detect_cells = set()
             current_centers = []
 
             palm_in = palmQ.tryGet()
@@ -170,12 +158,11 @@ def main():
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
 
-                    # actuator mapping:
-                    # vertical flip only, because that matched your hardware
+                    # actuator-space mapping
                     r, c, _ = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
                     mapped_r = GRID_R - 1 - r
                     idx = mapped_r * GRID_C + c
-                    detected_mask |= (1 << idx)
+                    detected_cells.add(idx)
 
                     # mirrored display drawing
                     fx1 = w - x2
@@ -185,71 +172,75 @@ def main():
                     cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
                     cv2.circle(disp, (fcx, cy), 4, 255, -1)
 
-                    # display highlight cell
-                    dr, dc, _ = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
-                    display_cells.append((dr, dc))
+                    # display-space cell
+                    dr, dc, didx = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
+                    display_detect_cells.add(didx)
 
-                    # save center for trail
                     current_centers.append((fcx, cy))
 
-                for dr, dc in display_cells:
+            # ---------------- Per-cell timing logic ----------------
+            output_mask = 0
+
+            for idx in range(N_CELLS):
+                is_active = now < active_until[idx]
+                is_detected = idx in detected_cells
+
+                if is_active:
+                    # keep actuator on
+                    output_mask |= (1 << idx)
+
+                    # while active, ignore detection in same box
+                    detect_start[idx] = None
+
+                else:
+                    # not active anymore
+                    active_until[idx] = 0.0
+
+                    if is_detected:
+                        if detect_start[idx] is None:
+                            detect_start[idx] = now
+                        elif now - detect_start[idx] >= args.hold_detect_s:
+                            active_until[idx] = now + args.actuate_hold_s
+                            output_mask |= (1 << idx)
+                            detect_start[idx] = None
+                    else:
+                        detect_start[idx] = None
+
+            # ---------------- Display highlights ----------------
+            # Show only boxes that are currently being detected
+            # but do NOT show boxes that are already active
+            for didx in display_detect_cells:
+                # convert display cell index -> actuator cell index
+                dr = didx // GRID_C
+                dc = didx % GRID_C
+
+                # map display row back to actuator row logic
+                # display is mirrored horizontally only, but actuator logic is vertically flipped
+                # for visual hiding, we only need to hide if the corresponding actuator cell is active
+                actuator_r = GRID_R - 1 - dr
+                actuator_c = dc
+                actuator_idx = actuator_r * GRID_C + actuator_c
+
+                if now >= active_until[actuator_idx]:
                     highlight_cell(disp, dr, dc, GRID_R, GRID_C)
 
-            # ---------------- Detection delay logic ----------------
-            # If something is already active, ignore new triggers until timer ends
-            if now < active_until:
-                output_mask = active_mask
-            else:
-                # active period ended
-                if active_mask != 0:
-                    active_mask = 0
-
-                # need same nonzero mask for 2 seconds before firing
-                if detected_mask != 0:
-                    if detected_mask != candidate_mask:
-                        candidate_mask = detected_mask
-                        candidate_start_time = now
-                    else:
-                        if candidate_start_time is not None and (now - candidate_start_time) >= args.hold_detect_s:
-                            active_mask = candidate_mask
-                            active_until = now + args.actuate_hold_s
-                            output_mask = active_mask
-
-                            # clear candidate once it fires
-                            candidate_mask = 0
-                            candidate_start_time = None
-                        else:
-                            output_mask = 0
-                else:
-                    candidate_mask = 0
-                    candidate_start_time = None
-                    output_mask = 0
-
-                if now < active_until:
-                    output_mask = active_mask
-
             # ---------------- Trail logic ----------------
-            # Only add trail while detecting and not during locked active period
-            if now >= active_until and current_centers:
+            if current_centers:
                 avg_x = int(sum(p[0] for p in current_centers) / len(current_centers))
                 avg_y = int(sum(p[1] for p in current_centers) / len(current_centers))
                 trail_points.append((avg_x, avg_y, now))
 
-            # remove old trail points
             trail_points = [p for p in trail_points if now - p[2] <= args.trail_time_s]
 
-            # keep list from growing too large
             if len(trail_points) > args.trail_max_points:
                 trail_points = trail_points[-args.trail_max_points:]
 
-            # draw disappearing trail
             for i in range(1, len(trail_points)):
                 x1, y1, t1 = trail_points[i - 1]
                 x2, y2, t2 = trail_points[i]
 
                 age = now - t2
                 if age <= args.trail_time_s:
-                    # newer line thicker, older line thinner
                     frac = max(0.0, 1.0 - age / args.trail_time_s)
                     thickness = max(1, int(1 + 4 * frac))
                     cv2.line(disp, (x1, y1), (x2, y2), 255, thickness)
@@ -261,16 +252,18 @@ def main():
                 print("Sent:", output_mask, "Cells:", mask_to_indices(output_mask, N_CELLS))
 
             # ---------------- Status text ----------------
-            if now < active_until:
-                status = f"ACTIVE {max(0.0, active_until - now):.1f}s"
-            elif candidate_mask != 0 and candidate_start_time is not None:
-                status = f"DETECTING {max(0.0, args.hold_detect_s - (now - candidate_start_time)):.1f}s"
-            else:
-                status = "IDLE"
+            detecting_cells = []
+            active_cells = []
+
+            for idx in range(N_CELLS):
+                if now < active_until[idx]:
+                    active_cells.append(idx)
+                elif detect_start[idx] is not None:
+                    detecting_cells.append(idx)
 
             cv2.putText(
                 disp,
-                f"Status:{status}",
+                f"Active:{active_cells}",
                 (10, 25),
                 cv2.FONT_HERSHEY_TRIPLEX,
                 0.6,
@@ -279,8 +272,17 @@ def main():
 
             cv2.putText(
                 disp,
-                f"Mask:{output_mask}  Cells:{mask_to_indices(output_mask, N_CELLS)}",
+                f"Detecting:{detecting_cells}",
                 (10, 55),
+                cv2.FONT_HERSHEY_TRIPLEX,
+                0.6,
+                255
+            )
+
+            cv2.putText(
+                disp,
+                f"Mask:{output_mask}  Cells:{mask_to_indices(output_mask, N_CELLS)}",
+                (10, 85),
                 cv2.FONT_HERSHEY_TRIPLEX,
                 0.6,
                 255
