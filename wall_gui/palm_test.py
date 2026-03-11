@@ -150,7 +150,9 @@ def main():
                     cy = int((y1 + y2) / 2)
 
                     # Original camera-space cell for actuator mapping
-                    r, c, idx = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
+                    r, c, _ = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
+                    mapped_r = GRID_R - 1 - r
+                    idx = mapped_r * GRID_C + c
                     mask |= (1 << idx)
 
                     # Mirrored display-space box and center
