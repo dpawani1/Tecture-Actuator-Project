@@ -44,6 +44,14 @@ stereo.setSubpixel(True)
 gridN = 3
 roi_margin = 0.05
 
+
+def vertical_flip_index(idx, cols=3, rows=3):
+    r = idx // cols
+    c = idx % cols
+    mapped_r = rows - 1 - r
+    return mapped_r * cols + c
+
+
 for r in range(gridN):
     for c in range(gridN):
         cell_x0 = c / gridN
@@ -77,8 +85,8 @@ spatialLocationCalculator.out.link(xoutSpatialData.input)
 last_sent_mask = None
 
 with dai.Device(pipeline) as device:
-    depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
-    spatialQueue = device.getOutputQueue(name="spatialData", maxSize=4, blocking=False)
+    depthQueue = device.getOutputQueue(name="depth", maxSize=1, blocking=False)
+    spatialQueue = device.getOutputQueue(name="spatialData", maxSize=1, blocking=False)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, 1100, 900)
@@ -136,7 +144,8 @@ with dai.Device(pipeline) as device:
         mask = 0
         for i in range(9):
             if active[i]:
-                mask |= (1 << i)
+                mapped_i = vertical_flip_index(i, cols=3, rows=3)
+                mask |= (1 << mapped_i)
 
         if mask != last_sent_mask:
             ser.write(f"{mask}\n".encode("ascii"))
