@@ -1,0 +1,6 @@
+#!/home/tex/Tecture-Actuator-Project/testenv/bin/python3.11
+import sys
+from blobconverter.__init__ import __run_cli__
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(__run_cli__())

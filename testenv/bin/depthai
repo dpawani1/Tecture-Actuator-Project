@@ -1,0 +1,6 @@
+#!/home/tex/Tecture-Actuator-Project/testenv/bin/python3.11
+import sys
+from depthai_cli.depthai_cli import cli
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(cli())
