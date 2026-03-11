@@ -37,17 +37,28 @@ xoutNN = pipeline.create(dai.node.XLinkOut)
 xoutRgb.setStreamName("rgb")
 xoutNN.setStreamName("nn")
 
-camRgb.setPreviewSize(300, 300)
+# Camera setup
+camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 camRgb.setInterleaved(False)
 camRgb.setFps(30)
+
+# Small preview for NN
+camRgb.setPreviewSize(300, 300)
+
+# Large video stream for display
+camRgb.setIspScale(1, 1)           # full sensor scaling
+camRgb.setVideoSize(1920, 1080)    # biggest practical display stream here
 
 nn.setConfidenceThreshold(CONF_THRESH)
 nn.setBlobPath(blobconverter.from_zoo(name="mobilenet-ssd", shaves=5))
 nn.setNumInferenceThreads(2)
 nn.input.setBlocking(False)
 
+# NN still uses small preview
 camRgb.preview.link(nn.input)
-camRgb.preview.link(xoutRgb.input)
+
+# Display uses large video stream
+camRgb.video.link(xoutRgb.input)
 nn.out.link(xoutNN.input)
 
 last_sent_mask = None
@@ -70,6 +81,9 @@ def person_count_to_mask(count):
         return ROW2_MASK
     return ROW3_MASK
 
+
+cv2.namedWindow(DISPLAY_NAME, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(DISPLAY_NAME, 1400, 900)
 
 with dai.Device(pipeline) as device:
     qRgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
@@ -126,8 +140,9 @@ with dai.Device(pipeline) as device:
                     "person",
                     (flipped_xmin + 8, ymin + 20),
                     cv2.FONT_HERSHEY_TRIPLEX,
-                    0.5,
-                    (255, 0, 0)
+                    0.8,
+                    (255, 0, 0),
+                    1
                 )
 
             fps = counter / max(time.monotonic() - start_time, 1e-6)
@@ -135,9 +150,9 @@ with dai.Device(pipeline) as device:
             cv2.putText(
                 draw_frame,
                 f"People: {detected_count}",
-                (10, 25),
+                (15, 35),
                 cv2.FONT_HERSHEY_TRIPLEX,
-                0.7,
+                1.0,
                 (255, 255, 255),
                 1
             )
@@ -145,9 +160,9 @@ with dai.Device(pipeline) as device:
             cv2.putText(
                 draw_frame,
                 f"NN fps: {fps:.2f}",
-                (10, draw_frame.shape[0] - 10),
+                (15, draw_frame.shape[0] - 20),
                 cv2.FONT_HERSHEY_TRIPLEX,
-                0.5,
+                0.8,
                 (255, 255, 255),
                 1
             )
