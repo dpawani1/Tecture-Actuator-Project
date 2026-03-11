@@ -156,7 +156,7 @@ def main():
 
     # back to square
     parser.add_argument("--video_size", type=int, default=640)
-    parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument("--fps", type=int, default=40)
 
     parser.add_argument("--hold_detect_s", type=float, default=1.0)
     parser.add_argument("--actuate_hold_s", type=float, default=6.0)
