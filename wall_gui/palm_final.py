@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--video_size", type=int, default=640)
     parser.add_argument("--fps", type=int, default=30)
 
-    parser.add_argument("--hold_detect_s", type=float, default=2.0)
+    parser.add_argument("--hold_detect_s", type=float, default=1.0)
     parser.add_argument("--actuate_hold_s", type=float, default=4.0)
 
     parser.add_argument("--trail_time_s", type=float, default=2.0)

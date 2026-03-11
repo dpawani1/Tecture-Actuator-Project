@@ -291,7 +291,7 @@ class WallGUI:
 
             self._disconnect_gui_for_external()
 
-            script_path = os.path.join(os.path.dirname(__file__), "palm_test.py")
+            script_path = os.path.join(os.path.dirname(__file__), "palm_final.py")
             self.palm_process = subprocess.Popen(
                 [sys.executable, script_path],
                 cwd=os.path.dirname(__file__)
