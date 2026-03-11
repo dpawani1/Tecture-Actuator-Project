@@ -60,7 +60,7 @@ for r in range(gridN):
         cfg = dai.SpatialLocationCalculatorConfigData()
         cfg.depthThresholds.lowerThreshold = 100
         cfg.depthThresholds.upperThreshold = 10000
-        cfg.calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MIN
+        cfg.calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MEDIAN
         cfg.roi = dai.Rect(topLeft, bottomRight)
 
         spatialLocationCalculator.initialConfig.addROI(cfg)
