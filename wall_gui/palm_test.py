@@ -76,7 +76,6 @@ def main():
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setFps(args.fps)
-
     cam.setIspScale(2, 3)  # 720p from 1080p
     cam.setVideoSize(args.video_size, args.video_size)
     cam.setPreviewSize(128, 128)
@@ -129,11 +128,12 @@ def main():
             frame = vidQ.get().getCvFrame()
             h, w = frame.shape[:2]
 
-            # Flip only for display
+            # Mirrored display
             disp = cv2.flip(frame, 1)
             draw_grid(disp, GRID_R, GRID_C)
 
             mask = 0
+            display_cells = []
 
             palm_in = palmQ.tryGet()
             if palm_in is not None:
@@ -149,11 +149,11 @@ def main():
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
 
-                    # Use original camera coordinates for actuator mapping
+                    # Original camera-space cell for actuator mapping
                     r, c, idx = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
                     mask |= (1 << idx)
 
-                    # Use flipped coordinates only for display
+                    # Mirrored display-space box and center
                     fx1 = w - x2
                     fx2 = w - x1
                     fcx = w - cx
@@ -161,14 +161,15 @@ def main():
                     cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
                     cv2.circle(disp, (fcx, cy), 4, 255, -1)
 
-                for idx in mask_to_indices(mask, N_CELLS):
-                    rr = idx // GRID_C
-                    cc = idx % GRID_C
-                    # highlight on display where that actuator index lives
-                    # if you want highlight to match the mirrored display view instead,
-                    # flip cc here with: cc = GRID_C - 1 - cc
-                    highlight_cell(disp, rr, cc, GRID_R, GRID_C)
+                    # Mirrored display-space cell for visual highlight
+                    dr, dc, _ = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
+                    display_cells.append((dr, dc))
 
+                # Highlight mirrored display cells so preview matches what user sees
+                for dr, dc in display_cells:
+                    highlight_cell(disp, dr, dc, GRID_R, GRID_C)
+
+            # Stability filter
             recent_masks.append(mask)
             if len(recent_masks) == STABLE_N and all(v == recent_masks[0] for v in recent_masks):
                 stable_mask = mask
