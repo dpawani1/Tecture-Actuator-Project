@@ -15,7 +15,7 @@ class WallController:
         self.lock = threading.Lock()
 
         self.current_mode = "idle"
-        self.speed_percent = 50
+        self.ramp_value = 50
 
     def connect(self, port, baud=9600, startup_wait=10.5):
         if self.connected:
@@ -62,24 +62,19 @@ class WallController:
             self.ser.write(f"{mask}\n".encode("utf-8"))
             self.ser.flush()
 
-    def set_speed_percent(self, percent):
+    def set_ramp_value(self, ramp_value):
         if not self.connected or self.ser is None:
             raise RuntimeError("Not connected to serial port.")
 
-        percent = max(0, min(100, int(percent)))
-        self.speed_percent = percent
-
-        # Must match Arduino safe range
-        min_speed = 30
-        max_speed = 220
-        speed_value = int(min_speed + (percent / 100.0) * (max_speed - min_speed))
+        ramp_value = max(0, min(300, int(ramp_value)))
+        self.ramp_value = ramp_value
 
         with self.lock:
-            self.ser.write(f"SPD:{speed_value}\n".encode("utf-8"))
+            self.ser.write(f"SPD:{ramp_value}\n".encode("utf-8"))
             self.ser.flush()
 
-        self.current_mode = f"speed_{percent}%"
-        return f"Applied speed {percent}% -> {speed_value} us/s"
+        self.current_mode = f"ramp_{ramp_value}"
+        return f"Applied command ramp: {ramp_value}"
 
     def home(self):
         self.stop()
@@ -157,5 +152,5 @@ class WallController:
             "connected": self.connected,
             "mode": self.current_mode,
             "busy": self.is_busy(),
-            "speed_percent": self.speed_percent,
+            "ramp_value": self.ramp_value,
         }
