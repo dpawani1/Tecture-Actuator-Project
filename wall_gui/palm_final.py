@@ -37,9 +37,7 @@ def highlight_cell(frame, r, c, rows, cols):
     y0 = int(h * r / rows)
     y1 = int(h * (r + 1) / rows)
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x0, y0), (x1, y1), 255, -1)
-    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+    # faster than making a full overlay copy every time
     cv2.rectangle(frame, (x0, y0), (x1, y1), 255, 2)
 
 
@@ -73,7 +71,6 @@ def update_tracks(tracks, detections, now, next_track_id,
 
     track_ids = list(tracks.keys())
 
-    # greedy nearest-neighbor matching
     pairs = []
     for tid in track_ids:
         last_pt = tracks[tid]["last_pos"]
@@ -96,7 +93,6 @@ def update_tracks(tracks, detections, now, next_track_id,
         if len(tracks[tid]["points"]) > trail_max_points:
             tracks[tid]["points"] = tracks[tid]["points"][-trail_max_points:]
 
-    # new tracks for unmatched detections
     for di, det in enumerate(detections):
         if di in matched_dets:
             continue
@@ -110,7 +106,6 @@ def update_tracks(tracks, detections, now, next_track_id,
             "points": [(det[0], det[1], now)],
         }
 
-    # prune old points and dead tracks
     dead_ids = []
     for tid, tr in tracks.items():
         tr["points"] = [p for p in tr["points"] if now - p[2] <= trail_time_s]
@@ -154,7 +149,6 @@ def main():
     parser.add_argument("--serial_port", default="/dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=9600)
 
-    # back to square
     parser.add_argument("--video_size", type=int, default=640)
     parser.add_argument("--fps", type=int, default=40)
 
@@ -174,16 +168,16 @@ def main():
 
     WIN = "Palm Multi Grid"
 
-    # ---------------- Pipeline ----------------
     pipeline = dai.Pipeline()
 
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setFps(args.fps)
-    cam.setIspScale(2, 3)  # 720p from 1080p
+    cam.setIspScale(2, 3)
     cam.setVideoSize(args.video_size, args.video_size)
     cam.setPreviewSize(128, 128)
     cam.setInterleaved(False)
+    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
     xout_cam = pipeline.create(dai.node.XLinkOut)
     xout_cam.setStreamName("cam")
@@ -204,7 +198,6 @@ def main():
     xout_nn.setStreamName("palm_nn")
     nn.out.link(xout_nn.input)
 
-    # ---------------- Serial ----------------
     ser = None
     try:
         ser = serial.Serial(args.serial_port, args.baud, timeout=0.05)
@@ -215,11 +208,9 @@ def main():
 
     palmDetection = PalmDetection()
 
-    # per-cell timers
     detect_start = [None] * N_CELLS
     active_until = [0.0] * N_CELLS
 
-    # multi-hand tracks
     tracks = {}
     next_track_id = 0
 
@@ -229,56 +220,66 @@ def main():
     cv2.resizeWindow(WIN, 1000, 1000)
 
     with dai.Device(pipeline) as device:
-        vidQ = device.getOutputQueue("cam", 4, False)
-        palmQ = device.getOutputQueue("palm_nn", 4, False)
+        # small queues so old frames/results do not pile up
+        vidQ = device.getOutputQueue("cam", maxSize=1, blocking=False)
+        palmQ = device.getOutputQueue("palm_nn", maxSize=1, blocking=False)
+
+        frame = None
+        last_boxes = []
 
         while True:
             now = time.time()
 
-            frame = vidQ.get().getCvFrame()
+            # always get latest camera frame path
+            in_frame = vidQ.get()
+            frame = in_frame.getCvFrame()
             h, w = frame.shape[:2]
 
             # mirrored display only
-            disp = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, 1)
+            disp = frame
+
             draw_grid(disp, GRID_R, GRID_C)
 
             detected_cells = set()
             display_detect_cells = set()
             display_centers = []
 
+            # only take newest NN result if available
             palm_in = palmQ.tryGet()
             if palm_in is not None:
-                boxes = palmDetection.decode(frame, palm_in)
+                # decode expects original unflipped geometry, so decode on flipped-back image
+                decode_frame = cv2.flip(frame, 1)
+                boxes = palmDetection.decode(decode_frame, palm_in)
 
-                boxes = sorted(
+                last_boxes = sorted(
                     boxes,
                     key=lambda b: (b[2] - b[0]) * (b[3] - b[1]),
                     reverse=True
                 )[:args.max_palms]
 
-                for (x1, y1, x2, y2) in boxes:
-                    cx = int((x1 + x2) / 2)
-                    cy = int((y1 + y2) / 2)
+            for (x1, y1, x2, y2) in last_boxes:
+                cx = int((x1 + x2) / 2)
+                cy = int((y1 + y2) / 2)
 
-                    # actuator mapping
-                    r, c, _ = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
-                    mapped_r = GRID_R - 1 - r
-                    idx = mapped_r * GRID_C + c
-                    detected_cells.add(idx)
+                # actuator mapping
+                r, c, _ = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
+                mapped_r = GRID_R - 1 - r
+                idx = mapped_r * GRID_C + c
+                detected_cells.add(idx)
 
-                    # display mapping
-                    fx1 = w - x2
-                    fx2 = w - x1
-                    fcx = w - cx
+                # display mapping
+                fx1 = w - x2
+                fx2 = w - x1
+                fcx = w - cx
 
-                    cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
-                    cv2.circle(disp, (fcx, cy), 4, 255, -1)
+                cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
+                cv2.circle(disp, (fcx, cy), 4, 255, -1)
 
-                    dr, dc, didx = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
-                    display_detect_cells.add(didx)
-                    display_centers.append((fcx, cy))
+                dr, dc, didx = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
+                display_detect_cells.add(didx)
+                display_centers.append((fcx, cy))
 
-            # ---------------- Multi-hand tracking ----------------
             next_track_id = update_tracks(
                 tracks,
                 display_centers,
@@ -290,22 +291,17 @@ def main():
                 trail_max_points=args.trail_max_points
             )
 
-            # ---------------- Per-cell timing logic ----------------
             output_mask = 0
 
             for idx in range(N_CELLS):
                 is_detected = idx in detected_cells
-                is_active = now < active_until[idx]
 
                 if is_detected:
                     if detect_start[idx] is None:
                         detect_start[idx] = now
 
-                    # activate after 2 sec
                     if (now - detect_start[idx]) >= args.hold_detect_s:
-                        # keep extending while hand remains there
                         active_until[idx] = max(active_until[idx], now + args.actuate_hold_s)
-
                 else:
                     detect_start[idx] = None
 
@@ -314,17 +310,13 @@ def main():
                 else:
                     active_until[idx] = 0.0
 
-            # ---------------- Display highlights ----------------
-            # Show detection highlights all the time, even for active cells
             for didx in display_detect_cells:
                 dr = didx // GRID_C
                 dc = didx % GRID_C
                 highlight_cell(disp, dr, dc, GRID_R, GRID_C)
 
-            # draw multi-hand colored trails
             draw_tracks(disp, tracks, now, args.trail_time_s)
 
-            # ---------------- Serial send ----------------
             if ser and output_mask != last_sent_mask:
                 ser.write(f"{output_mask}\n".encode())
                 last_sent_mask = output_mask
