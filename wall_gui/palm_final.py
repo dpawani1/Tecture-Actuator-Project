@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import time
+import math
 import argparse
 
 import cv2
@@ -46,6 +47,103 @@ def mask_to_indices(mask, n):
     return [i for i in range(n) if (mask >> i) & 1]
 
 
+def dist(p1, p2):
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+
+def color_for_id(track_id):
+    palette = [
+        (255, 255, 255),  # white
+        (255, 255, 0),    # cyan
+        (0, 255, 255),    # yellow
+        (255, 0, 255),    # magenta
+        (0, 255, 0),      # green
+        (0, 128, 255),    # orange
+        (255, 0, 0),      # blue
+        (0, 0, 255),      # red
+        (128, 0, 255),    # purple
+    ]
+    return palette[track_id % len(palette)]
+
+
+def update_tracks(tracks, detections, now, next_track_id,
+                  max_match_dist=100, max_track_age=0.7, trail_time_s=2.0, trail_max_points=120):
+    matched_tracks = set()
+    matched_dets = set()
+
+    track_ids = list(tracks.keys())
+
+    # greedy nearest-neighbor matching
+    pairs = []
+    for tid in track_ids:
+        last_pt = tracks[tid]["last_pos"]
+        for di, det in enumerate(detections):
+            pairs.append((dist(last_pt, det), tid, di))
+    pairs.sort(key=lambda x: x[0])
+
+    for d, tid, di in pairs:
+        if d > max_match_dist:
+            continue
+        if tid in matched_tracks or di in matched_dets:
+            continue
+
+        matched_tracks.add(tid)
+        matched_dets.add(di)
+
+        tracks[tid]["last_pos"] = detections[di]
+        tracks[tid]["last_seen"] = now
+        tracks[tid]["points"].append((detections[di][0], detections[di][1], now))
+        if len(tracks[tid]["points"]) > trail_max_points:
+            tracks[tid]["points"] = tracks[tid]["points"][-trail_max_points:]
+
+    # new tracks for unmatched detections
+    for di, det in enumerate(detections):
+        if di in matched_dets:
+            continue
+        tid = next_track_id
+        next_track_id += 1
+        tracks[tid] = {
+            "id": tid,
+            "color": color_for_id(tid),
+            "last_pos": det,
+            "last_seen": now,
+            "points": [(det[0], det[1], now)],
+        }
+
+    # prune old points and dead tracks
+    dead_ids = []
+    for tid, tr in tracks.items():
+        tr["points"] = [p for p in tr["points"] if now - p[2] <= trail_time_s]
+        if (now - tr["last_seen"] > max_track_age) and not tr["points"]:
+            dead_ids.append(tid)
+
+    for tid in dead_ids:
+        del tracks[tid]
+
+    return next_track_id
+
+
+def draw_tracks(frame, tracks, now, trail_time_s):
+    for tid, tr in tracks.items():
+        pts = tr["points"]
+        color = tr["color"]
+
+        for i in range(1, len(pts)):
+            x1, y1, t1 = pts[i - 1]
+            x2, y2, t2 = pts[i]
+
+            age = now - t2
+            if age <= trail_time_s:
+                frac = max(0.0, 1.0 - age / trail_time_s)
+                thickness = max(1, int(1 + 4 * frac))
+                cv2.line(frame, (x1, y1), (x2, y2), color, thickness)
+
+        if pts:
+            x, y, t = pts[-1]
+            if now - t <= trail_time_s:
+                cv2.circle(frame, (x, y), 5, color, -1)
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -56,8 +154,8 @@ def main():
     parser.add_argument("--serial_port", default="/dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=9600)
 
-    parser.add_argument("--video_width", type=int, default=960)
-    parser.add_argument("--video_height", type=int, default=640)
+    # back to square
+    parser.add_argument("--video_size", type=int, default=640)
     parser.add_argument("--fps", type=int, default=30)
 
     parser.add_argument("--hold_detect_s", type=float, default=2.0)
@@ -65,6 +163,8 @@ def main():
 
     parser.add_argument("--trail_time_s", type=float, default=2.0)
     parser.add_argument("--trail_max_points", type=int, default=120)
+    parser.add_argument("--track_match_dist", type=float, default=100.0)
+    parser.add_argument("--track_max_age", type=float, default=0.7)
 
     args = parser.parse_args()
 
@@ -80,8 +180,8 @@ def main():
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setFps(args.fps)
-    cam.setIspScale(2, 3)
-    cam.setVideoSize(args.video_width, args.video_height)
+    cam.setIspScale(2, 3)  # 720p from 1080p
+    cam.setVideoSize(args.video_size, args.video_size)
     cam.setPreviewSize(128, 128)
     cam.setInterleaved(False)
 
@@ -115,17 +215,18 @@ def main():
 
     palmDetection = PalmDetection()
 
-    # For each cell:
-    # detect_start[i] = time when hand started staying in that cell
-    # active_until[i] = time until actuator stays on
+    # per-cell timers
     detect_start = [None] * N_CELLS
     active_until = [0.0] * N_CELLS
 
+    # multi-hand tracks
+    tracks = {}
+    next_track_id = 0
+
     last_sent_mask = None
-    trail_points = []
 
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WIN, 1200, 800)
+    cv2.resizeWindow(WIN, 1000, 1000)
 
     with dai.Device(pipeline) as device:
         vidQ = device.getOutputQueue("cam", 4, False)
@@ -137,12 +238,13 @@ def main():
             frame = vidQ.get().getCvFrame()
             h, w = frame.shape[:2]
 
+            # mirrored display only
             disp = cv2.flip(frame, 1)
             draw_grid(disp, GRID_R, GRID_C)
 
             detected_cells = set()
             display_detect_cells = set()
-            current_centers = []
+            display_centers = []
 
             palm_in = palmQ.tryGet()
             if palm_in is not None:
@@ -158,13 +260,13 @@ def main():
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
 
-                    # actuator-space mapping
+                    # actuator mapping
                     r, c, _ = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
                     mapped_r = GRID_R - 1 - r
                     idx = mapped_r * GRID_C + c
                     detected_cells.add(idx)
 
-                    # mirrored display drawing
+                    # display mapping
                     fx1 = w - x2
                     fx2 = w - x1
                     fcx = w - cx
@@ -172,121 +274,61 @@ def main():
                     cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
                     cv2.circle(disp, (fcx, cy), 4, 255, -1)
 
-                    # display-space cell
                     dr, dc, didx = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
                     display_detect_cells.add(didx)
+                    display_centers.append((fcx, cy))
 
-                    current_centers.append((fcx, cy))
+            # ---------------- Multi-hand tracking ----------------
+            next_track_id = update_tracks(
+                tracks,
+                display_centers,
+                now,
+                next_track_id,
+                max_match_dist=args.track_match_dist,
+                max_track_age=args.track_max_age,
+                trail_time_s=args.trail_time_s,
+                trail_max_points=args.trail_max_points
+            )
 
             # ---------------- Per-cell timing logic ----------------
             output_mask = 0
 
             for idx in range(N_CELLS):
-                is_active = now < active_until[idx]
                 is_detected = idx in detected_cells
+                is_active = now < active_until[idx]
 
-                if is_active:
-                    # keep actuator on
-                    output_mask |= (1 << idx)
+                if is_detected:
+                    if detect_start[idx] is None:
+                        detect_start[idx] = now
 
-                    # while active, ignore detection in same box
-                    detect_start[idx] = None
+                    # activate after 2 sec
+                    if (now - detect_start[idx]) >= args.hold_detect_s:
+                        # keep extending while hand remains there
+                        active_until[idx] = max(active_until[idx], now + args.actuate_hold_s)
 
                 else:
-                    # not active anymore
+                    detect_start[idx] = None
+
+                if now < active_until[idx]:
+                    output_mask |= (1 << idx)
+                else:
                     active_until[idx] = 0.0
 
-                    if is_detected:
-                        if detect_start[idx] is None:
-                            detect_start[idx] = now
-                        elif now - detect_start[idx] >= args.hold_detect_s:
-                            active_until[idx] = now + args.actuate_hold_s
-                            output_mask |= (1 << idx)
-                            detect_start[idx] = None
-                    else:
-                        detect_start[idx] = None
-
             # ---------------- Display highlights ----------------
-            # Show only boxes that are currently being detected
-            # but do NOT show boxes that are already active
+            # Show detection highlights all the time, even for active cells
             for didx in display_detect_cells:
-                # convert display cell index -> actuator cell index
                 dr = didx // GRID_C
                 dc = didx % GRID_C
+                highlight_cell(disp, dr, dc, GRID_R, GRID_C)
 
-                # map display row back to actuator row logic
-                # display is mirrored horizontally only, but actuator logic is vertically flipped
-                # for visual hiding, we only need to hide if the corresponding actuator cell is active
-                actuator_r = GRID_R - 1 - dr
-                actuator_c = dc
-                actuator_idx = actuator_r * GRID_C + actuator_c
-
-                if now >= active_until[actuator_idx]:
-                    highlight_cell(disp, dr, dc, GRID_R, GRID_C)
-
-            # ---------------- Trail logic ----------------
-            if current_centers:
-                avg_x = int(sum(p[0] for p in current_centers) / len(current_centers))
-                avg_y = int(sum(p[1] for p in current_centers) / len(current_centers))
-                trail_points.append((avg_x, avg_y, now))
-
-            trail_points = [p for p in trail_points if now - p[2] <= args.trail_time_s]
-
-            if len(trail_points) > args.trail_max_points:
-                trail_points = trail_points[-args.trail_max_points:]
-
-            for i in range(1, len(trail_points)):
-                x1, y1, t1 = trail_points[i - 1]
-                x2, y2, t2 = trail_points[i]
-
-                age = now - t2
-                if age <= args.trail_time_s:
-                    frac = max(0.0, 1.0 - age / args.trail_time_s)
-                    thickness = max(1, int(1 + 4 * frac))
-                    cv2.line(disp, (x1, y1), (x2, y2), 255, thickness)
+            # draw multi-hand colored trails
+            draw_tracks(disp, tracks, now, args.trail_time_s)
 
             # ---------------- Serial send ----------------
             if ser and output_mask != last_sent_mask:
                 ser.write(f"{output_mask}\n".encode())
                 last_sent_mask = output_mask
                 print("Sent:", output_mask, "Cells:", mask_to_indices(output_mask, N_CELLS))
-
-            # ---------------- Status text ----------------
-            detecting_cells = []
-            active_cells = []
-
-            for idx in range(N_CELLS):
-                if now < active_until[idx]:
-                    active_cells.append(idx)
-                elif detect_start[idx] is not None:
-                    detecting_cells.append(idx)
-
-            cv2.putText(
-                disp,
-                f"Active:{active_cells}",
-                (10, 25),
-                cv2.FONT_HERSHEY_TRIPLEX,
-                0.6,
-                255
-            )
-
-            cv2.putText(
-                disp,
-                f"Detecting:{detecting_cells}",
-                (10, 55),
-                cv2.FONT_HERSHEY_TRIPLEX,
-                0.6,
-                255
-            )
-
-            cv2.putText(
-                disp,
-                f"Mask:{output_mask}  Cells:{mask_to_indices(output_mask, N_CELLS)}",
-                (10, 85),
-                cv2.FONT_HERSHEY_TRIPLEX,
-                0.6,
-                255
-            )
 
             cv2.imshow(WIN, disp)
 
