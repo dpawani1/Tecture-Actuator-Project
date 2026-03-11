@@ -1,4 +1,3 @@
-from pathlib import Path
 import time
 import cv2
 import depthai as dai
@@ -8,11 +7,6 @@ import blobconverter
 
 SERIAL_PORT = "/dev/ttyACM0"
 BAUD = 9600
-
-labelMap = [
-    "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
-    "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"
-]
 
 PERSON_LABEL = 15
 
@@ -37,29 +31,30 @@ xoutNN = pipeline.create(dai.node.XLinkOut)
 xoutRgb.setStreamName("rgb")
 xoutNN.setStreamName("nn")
 
-# Camera setup
+# Camera
 camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 camRgb.setInterleaved(False)
+camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 camRgb.setFps(30)
 
-# Small preview for NN
+# Keep NN input small
 camRgb.setPreviewSize(300, 300)
 
-# Large video stream for display
-camRgb.setIspScale(2, 3)           # full sensor scaling
-camRgb.setVideoSize(960, 540)    # biggest practical display stream here
+# Keep display stream moderate
+camRgb.setIspScale(2, 3)
+camRgb.setVideoSize(640, 640)
 
+# NN
 nn.setConfidenceThreshold(CONF_THRESH)
 nn.setBlobPath(blobconverter.from_zoo(name="mobilenet-ssd", shaves=5))
 nn.setNumInferenceThreads(2)
 nn.input.setBlocking(False)
 
-# NN still uses small preview
+# Link streams
 camRgb.preview.link(nn.input)
-
-# Display uses large video stream
 camRgb.video.link(xoutRgb.input)
 nn.out.link(xoutNN.input)
+
 
 last_sent_mask = None
 current_mask = 0
@@ -83,11 +78,12 @@ def person_count_to_mask(count):
 
 
 cv2.namedWindow(DISPLAY_NAME, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(DISPLAY_NAME, 1400, 900)
+cv2.resizeWindow(DISPLAY_NAME, 1000, 1000)
 
 with dai.Device(pipeline) as device:
-    qRgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-    qNN = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+    # Keep queues tiny so old frames do not pile up
+    qRgb = device.getOutputQueue(name="rgb", maxSize=1, blocking=False)
+    qNN = device.getOutputQueue(name="nn", maxSize=1, blocking=False)
 
     frame = None
     detections = []
@@ -96,13 +92,12 @@ with dai.Device(pipeline) as device:
     counter = 0
 
     while True:
-        inRgb = qRgb.tryGet()
+        # Always take only latest frame / latest NN result
+        inRgb = qRgb.get()
+        frame = inRgb.getCvFrame()
+        frame = cv2.flip(frame, 1)
+
         inNN = qNN.tryGet()
-
-        if inRgb is not None:
-            frame = inRgb.getCvFrame()
-            frame = cv2.flip(frame, 1)
-
         if inNN is not None:
             detections = inNN.detections
             counter += 1
@@ -125,49 +120,47 @@ with dai.Device(pipeline) as device:
             ser.write(f"{current_mask}\n".encode("ascii"))
             last_sent_mask = current_mask
 
-        if frame is not None:
-            draw_frame = frame.copy()
+        # Draw directly on frame instead of frame.copy()
+        for det in person_detections:
+            xmin, ymin, xmax, ymax = frame_norm(frame, (det.xmin, det.ymin, det.xmax, det.ymax))
 
-            for det in person_detections:
-                xmin, ymin, xmax, ymax = frame_norm(draw_frame, (det.xmin, det.ymin, det.xmax, det.ymax))
+            flipped_xmin = frame.shape[1] - xmax
+            flipped_xmax = frame.shape[1] - xmin
 
-                flipped_xmin = draw_frame.shape[1] - xmax
-                flipped_xmax = draw_frame.shape[1] - xmin
-
-                cv2.rectangle(draw_frame, (flipped_xmin, ymin), (flipped_xmax, ymax), (255, 0, 0), 2)
-                cv2.putText(
-                    draw_frame,
-                    "person",
-                    (flipped_xmin + 8, ymin + 20),
-                    cv2.FONT_HERSHEY_TRIPLEX,
-                    0.8,
-                    (255, 0, 0),
-                    1
-                )
-
-            fps = counter / max(time.monotonic() - start_time, 1e-6)
-
+            cv2.rectangle(frame, (flipped_xmin, ymin), (flipped_xmax, ymax), (255, 0, 0), 2)
             cv2.putText(
-                draw_frame,
-                f"People: {detected_count}",
-                (15, 35),
+                frame,
+                "person",
+                (flipped_xmin + 8, ymin + 20),
                 cv2.FONT_HERSHEY_TRIPLEX,
-                1.0,
-                (255, 255, 255),
+                0.5,
+                (255, 0, 0),
                 1
             )
 
-            cv2.putText(
-                draw_frame,
-                f"NN fps: {fps:.2f}",
-                (15, draw_frame.shape[0] - 20),
-                cv2.FONT_HERSHEY_TRIPLEX,
-                0.8,
-                (255, 255, 255),
-                1
-            )
+        fps = counter / max(time.monotonic() - start_time, 1e-6)
 
-            cv2.imshow(DISPLAY_NAME, draw_frame)
+        cv2.putText(
+            frame,
+            f"People: {detected_count}",
+            (10, 25),
+            cv2.FONT_HERSHEY_TRIPLEX,
+            0.7,
+            (255, 255, 255),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            f"NN fps: {fps:.2f}",
+            (10, frame.shape[0] - 10),
+            cv2.FONT_HERSHEY_TRIPLEX,
+            0.5,
+            (255, 255, 255),
+            1
+        )
+
+        cv2.imshow(DISPLAY_NAME, frame)
 
         if cv2.waitKey(1) == ord('q'):
             break
