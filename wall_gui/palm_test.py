@@ -116,9 +116,9 @@ def main():
     stable_mask = 0
     last_sent_mask = None
 
-    # ---------------- Window (NO FRAME RESIZE) ----------------
+    # ---------------- Window ----------------
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WIN, 1000, 1000)  # make big without killing FPS
+    cv2.resizeWindow(WIN, 1000, 1000)
 
     # ---------------- Run ----------------
     with dai.Device(pipeline) as device:
@@ -129,24 +129,19 @@ def main():
             frame = vidQ.get().getCvFrame()
             h, w = frame.shape[:2]
 
-            # --- HFLIP FIX ---
-            # NN boxes are for the *unflipped* image (cam.preview).
-            # We flip the DISPLAY image and also flip the box X coords + center X
-            # so: (1) the shown video looks correct and (2) grid->actuators match left/right.
+            # Flip only for display
             disp = cv2.flip(frame, 1)
-
             draw_grid(disp, GRID_R, GRID_C)
 
             mask = 0
 
             palm_in = palmQ.tryGet()
             if palm_in is not None:
-                boxes = palmDetection.decode(frame, palm_in)  # decode using original frame
+                boxes = palmDetection.decode(frame, palm_in)
 
-                # Sort largest first
                 boxes = sorted(
                     boxes,
-                    key=lambda b: (b[2]-b[0]) * (b[3]-b[1]),
+                    key=lambda b: (b[2] - b[0]) * (b[3] - b[1]),
                     reverse=True
                 )[:args.max_palms]
 
@@ -154,26 +149,26 @@ def main():
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
 
-                    # --- HFLIP FIX: flip coords into display space ---
+                    # Use original camera coordinates for actuator mapping
+                    r, c, idx = cell_from_xy(cx, cy, w, h, GRID_R, GRID_C)
+                    mask |= (1 << idx)
+
+                    # Use flipped coordinates only for display
                     fx1 = w - x2
                     fx2 = w - x1
                     fcx = w - cx
 
-                    # Use flipped center for cell mapping (so actuators match the shown video)
-                    r, c, idx = cell_from_xy(fcx, cy, w, h, GRID_R, GRID_C)
-                    mask |= (1 << idx)
-
-                    # Draw on flipped display frame
                     cv2.rectangle(disp, (fx1, y1), (fx2, y2), 255, 2)
                     cv2.circle(disp, (fcx, cy), 4, 255, -1)
 
-                # Highlight active cells
                 for idx in mask_to_indices(mask, N_CELLS):
                     rr = idx // GRID_C
                     cc = idx % GRID_C
+                    # highlight on display where that actuator index lives
+                    # if you want highlight to match the mirrored display view instead,
+                    # flip cc here with: cc = GRID_C - 1 - cc
                     highlight_cell(disp, rr, cc, GRID_R, GRID_C)
 
-            # Stability filter
             recent_masks.append(mask)
             if len(recent_masks) == STABLE_N and all(v == recent_masks[0] for v in recent_masks):
                 stable_mask = mask
@@ -181,7 +176,7 @@ def main():
                 if ser and stable_mask != last_sent_mask:
                     ser.write(f"{stable_mask}\n".encode())
                     last_sent_mask = stable_mask
-                    print("Sent:", stable_mask)
+                    print("Sent:", stable_mask, "Cells:", mask_to_indices(stable_mask, N_CELLS))
 
             cv2.putText(
                 disp,
