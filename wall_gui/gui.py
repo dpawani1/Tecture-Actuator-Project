@@ -19,6 +19,7 @@ class WallGUI:
 
         self.palm_process = None
         self.depth_process = None
+        self.object_process = None
 
         self.port_var = tk.StringVar(value="/dev/ttyACM0")
         self.baud_var = tk.StringVar(value="9600")
@@ -32,7 +33,7 @@ class WallGUI:
         self.last_baud = None
 
         self.auto_disconnected_for_external = False
-        self.active_external_mode = None  # None, "palm", or "depth"
+        self.active_external_mode = None
 
         self._build_ui()
         self._poll_status()
@@ -43,7 +44,6 @@ class WallGUI:
         main = ttk.Frame(self.root, padding=pad)
         main.pack(fill="both", expand=True)
 
-        # Connection
         conn_frame = ttk.LabelFrame(main, text="Connection", padding=pad)
         conn_frame.pack(fill="x", pady=(0, 10))
 
@@ -60,7 +60,6 @@ class WallGUI:
             row=1, column=2, columnspan=2, pady=(10, 0), sticky="ew"
         )
 
-        # Pattern control
         pattern_frame = ttk.LabelFrame(main, text="Pattern Control", padding=pad)
         pattern_frame.pack(fill="x", pady=(0, 10))
 
@@ -87,7 +86,6 @@ class WallGUI:
             row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0)
         )
 
-        # Command ramp control
         ramp_frame = ttk.LabelFrame(main, text="Command Ramp Control", padding=pad)
         ramp_frame.pack(fill="x", pady=(0, 10))
 
@@ -105,7 +103,6 @@ class WallGUI:
 
         ttk.Button(ramp_frame, text="Apply Ramp", command=self.apply_ramp).pack(anchor="w", pady=(8, 0))
 
-        # Quick controls
         quick_frame = ttk.LabelFrame(main, text="Quick Controls", padding=pad)
         quick_frame.pack(fill="x", pady=(0, 10))
 
@@ -116,7 +113,6 @@ class WallGUI:
         for i in range(3):
             quick_frame.columnconfigure(i, weight=1)
 
-        # Palm tracker
         palm_frame = ttk.LabelFrame(main, text="Palm Tracker", padding=pad)
         palm_frame.pack(fill="x", pady=(0, 10))
 
@@ -135,7 +131,6 @@ class WallGUI:
         palm_frame.columnconfigure(0, weight=1)
         palm_frame.columnconfigure(1, weight=1)
 
-        # Spatial depth
         depth_frame = ttk.LabelFrame(main, text="Spatial Depth", padding=pad)
         depth_frame.pack(fill="x", pady=(0, 10))
 
@@ -154,7 +149,24 @@ class WallGUI:
         depth_frame.columnconfigure(0, weight=1)
         depth_frame.columnconfigure(1, weight=1)
 
-        # Status
+        object_frame = ttk.LabelFrame(main, text="Object Detection", padding=pad)
+        object_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Button(
+            object_frame,
+            text="Start Object Detection",
+            command=self.start_object_detection
+        ).grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+
+        ttk.Button(
+            object_frame,
+            text="Stop Object Detection",
+            command=self.stop_object_detection
+        ).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        object_frame.columnconfigure(0, weight=1)
+        object_frame.columnconfigure(1, weight=1)
+
         status_frame = ttk.LabelFrame(main, text="Status", padding=pad)
         status_frame.pack(fill="x")
 
@@ -163,7 +175,7 @@ class WallGUI:
     def connect(self):
         try:
             if self._any_external_running():
-                messagebox.showerror("Connection Error", "Stop Palm Tracker or Spatial Depth before connecting GUI serial.")
+                messagebox.showerror("Connection Error", "Stop Palm, Spatial Depth, or Object Detection before connecting GUI serial.")
                 return
 
             port = self.port_var.get().strip()
@@ -234,7 +246,11 @@ class WallGUI:
         return proc is not None and proc.poll() is None
 
     def _any_external_running(self):
-        return self._is_process_running(self.palm_process) or self._is_process_running(self.depth_process)
+        return (
+            self._is_process_running(self.palm_process)
+            or self._is_process_running(self.depth_process)
+            or self._is_process_running(self.object_process)
+        )
 
     def _disconnect_gui_for_external(self):
         if self.controller.connected:
@@ -266,7 +282,9 @@ class WallGUI:
             if self._is_process_running(self.depth_process):
                 self.status_var.set("Spatial Depth is already running. Stop it first.")
                 return
-
+            if self._is_process_running(self.object_process):
+                self.status_var.set("Object Detection is already running. Stop it first.")
+                return
             if self._is_process_running(self.palm_process):
                 self.status_var.set("Palm tracker is already running.")
                 return
@@ -274,7 +292,6 @@ class WallGUI:
             self._disconnect_gui_for_external()
 
             script_path = os.path.join(os.path.dirname(__file__), "palm_test.py")
-
             self.palm_process = subprocess.Popen(
                 [sys.executable, script_path],
                 cwd=os.path.dirname(__file__)
@@ -301,7 +318,6 @@ class WallGUI:
                 return
 
             self.palm_process.terminate()
-
             try:
                 self.palm_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -319,7 +335,9 @@ class WallGUI:
             if self._is_process_running(self.palm_process):
                 self.status_var.set("Palm tracker is already running. Stop it first.")
                 return
-
+            if self._is_process_running(self.object_process):
+                self.status_var.set("Object Detection is already running. Stop it first.")
+                return
             if self._is_process_running(self.depth_process):
                 self.status_var.set("Spatial Depth is already running.")
                 return
@@ -327,7 +345,6 @@ class WallGUI:
             self._disconnect_gui_for_external()
 
             script_path = os.path.join(os.path.dirname(__file__), "grid_depth.py")
-
             self.depth_process = subprocess.Popen(
                 [sys.executable, script_path],
                 cwd=os.path.dirname(__file__)
@@ -354,7 +371,6 @@ class WallGUI:
                 return
 
             self.depth_process.terminate()
-
             try:
                 self.depth_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -366,6 +382,59 @@ class WallGUI:
 
         except Exception as e:
             messagebox.showerror("Spatial Depth Stop Error", str(e))
+
+    def start_object_detection(self):
+        try:
+            if self._is_process_running(self.palm_process):
+                self.status_var.set("Palm tracker is already running. Stop it first.")
+                return
+            if self._is_process_running(self.depth_process):
+                self.status_var.set("Spatial Depth is already running. Stop it first.")
+                return
+            if self._is_process_running(self.object_process):
+                self.status_var.set("Object Detection is already running.")
+                return
+
+            self._disconnect_gui_for_external()
+
+            script_path = os.path.join(os.path.dirname(__file__), "object_detect.py")
+            self.object_process = subprocess.Popen(
+                [sys.executable, script_path],
+                cwd=os.path.dirname(__file__)
+            )
+
+            self.active_external_mode = "object"
+
+            if self.auto_disconnected_for_external:
+                self.status_var.set("Object Detection started. GUI serial was disconnected automatically.")
+            else:
+                self.status_var.set("Object Detection started.")
+
+        except Exception as e:
+            messagebox.showerror("Object Detection Error", str(e))
+
+    def stop_object_detection(self):
+        try:
+            if self.object_process is None or self.object_process.poll() is not None:
+                self.object_process = None
+                if self.active_external_mode == "object" or self.auto_disconnected_for_external:
+                    self._reconnect_gui_serial_after_external("Object Detection")
+                else:
+                    self.status_var.set("Object Detection is not running.")
+                return
+
+            self.object_process.terminate()
+            try:
+                self.object_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.object_process.kill()
+                self.object_process.wait(timeout=2)
+
+            self.object_process = None
+            self._reconnect_gui_serial_after_external("Object Detection")
+
+        except Exception as e:
+            messagebox.showerror("Object Detection Stop Error", str(e))
 
     def on_close(self):
         try:
@@ -389,6 +458,16 @@ class WallGUI:
             pass
 
         try:
+            if self._is_process_running(self.object_process):
+                self.object_process.terminate()
+                try:
+                    self.object_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.object_process.kill()
+        except Exception:
+            pass
+
+        try:
             self.controller.disconnect()
         except Exception:
             pass
@@ -397,17 +476,20 @@ class WallGUI:
 
     def _poll_status(self):
         try:
-            # Auto-handle palm exiting on its own
             if self.palm_process is not None and self.palm_process.poll() is not None:
                 self.palm_process = None
                 if self.active_external_mode == "palm":
                     self._reconnect_gui_serial_after_external("Palm tracker")
 
-            # Auto-handle depth exiting on its own
             if self.depth_process is not None and self.depth_process.poll() is not None:
                 self.depth_process = None
                 if self.active_external_mode == "depth":
                     self._reconnect_gui_serial_after_external("Spatial Depth")
+
+            if self.object_process is not None and self.object_process.poll() is not None:
+                self.object_process = None
+                if self.active_external_mode == "object":
+                    self._reconnect_gui_serial_after_external("Object Detection")
 
             status = self.controller.get_status()
             if status["connected"]:
@@ -419,6 +501,8 @@ class WallGUI:
                     self.status_var.set("Palm tracker running | GUI serial disconnected")
                 elif self._is_process_running(self.depth_process):
                     self.status_var.set("Spatial Depth running | GUI serial disconnected")
+                elif self._is_process_running(self.object_process):
+                    self.status_var.set("Object Detection running | GUI serial disconnected")
                 else:
                     self.status_var.set("Not connected")
         except Exception:
