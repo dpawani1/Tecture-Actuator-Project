@@ -86,12 +86,12 @@ requirements.txt
 ```text
 Tecture-Actuator-Project/
 │
-├── wall_gui/                        # Main GUI and control application (Pi)
-├── raspberrypi_test_code/           # Vision processing & control test scripts
-├── assorted_arduino_test_codes/     # Development test firmware (.ino)
-├── requirements.txt                 # Python dependencies
-├── README.md                        # Project documentation
-├── docs/                            # Setup instructions & system architecture
+├── wall_gui/              # Main GUI and control application (Pi)
+├── raspberrypi_test_code/     # Folder containing testing of the vision processing and control scripts
+├── assorted_arduino_test_codes/  # Folder containing assorted test codes used in development of the arduino/actuator firmware (.ino)
+├── requirements.txt       # Python dependencies
+├── README.md              # Project documentation
+├── docs/                  # Setup instructions & system architecture
 ```
 
 ---
