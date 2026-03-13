@@ -82,7 +82,7 @@ requirements.txt
 ---
 
 ## 📂 Repository Structure
-
+`
 Tecture-Actuator-Project/
 │
 ├── wall_gui/              # Main GUI and control application (Pi)
@@ -91,7 +91,7 @@ Tecture-Actuator-Project/
 ├── requirements.txt       # Python dependencies
 ├── README.md              # Project documentation
 ├── docs/                  # Setup instructions & system architecture
-
+`
 ---
 
 ## ▶️ Setup and Installation
